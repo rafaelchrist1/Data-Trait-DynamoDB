@@ -1,0 +1,158 @@
+<?php
+
+namespace App\Http\Controllers\iot;
+
+use App\Http\Controllers\Controller;
+use App\Models\Customizig;
+use App\Models\DynamoDBNucleoRecords;
+use App\Models\IotNucleoRegistroTratado;
+use App\Models\Nucleo;
+use File;
+use Response;
+use Carbon\Carbon;
+
+class iotDynamoDBTraitController extends Controller
+{
+
+
+    public function traitNucleoRecord($nucleo)
+    {
+        $loop = 0;
+        while ($loop < 200) {
+            $min = Customizig::where('key', 'nucleo_records_trait-min')->get()->first();
+            $ate = Carbon::createFromTimestampMs($min->campo);
+            $ate->addMinutes(20);
+            $records = DynamoDBNucleoRecords::where('id_nucleo', intval($nucleo))->where('time', 'between', [intval($min->campo), intval($ate->getPreciseTimestamp(3))])
+                ->limit(200)
+                ->get();
+
+            foreach ($records as $record) {
+                // $data = Carbon::createFromTimestampMs($record->time);
+                if (count($record->value['central']['granjas']) > 0) {
+
+                    foreach ($record->value['central']['granjas'] as $granja) {
+                        foreach ($granja['iot_end'] as $end_device) {
+
+                            foreach ($end_device['sensors'] as $end_device_sensor) {
+                                if (isset($end_device_sensor['value'])) {
+                                    if (
+                                        IotNucleoRegistroTratado::where('nucleo_id', $record->id_nucleo)
+                                        ->where('time', $record->time)
+                                        ->where('sensor_id', $this->tratarSensoresErrados($end_device_sensor, $end_device['id_iot_end']))
+                                        ->where('iot_granja_id', $end_device['id_iot_end'])
+                                        ->get()->first() == null
+                                    ) {
+                                        IotNucleoRegistroTratado::create(
+                                            [
+                                                'nucleo_id' => $record->id_nucleo,
+                                                'sensor_id' => $this->tratarSensoresErrados($end_device_sensor, $end_device['id_iot_end']),
+                                                'iot_granja_id' => $end_device['id_iot_end'],
+                                                'time' => $record->time,
+                                                'value' => $end_device_sensor['value']
+                                            ]
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+
+                if (count($record->value['central']['sensors']) > 0) {
+                    foreach ($record->value['central']['sensors'] as $central_sensor) {
+                        if (isset($central_sensor['value'])) {
+
+
+                            if (
+                                IotNucleoRegistroTratado::where('nucleo_id', $record->id_nucleo)
+                                ->where('time', $record->time)
+                                ->where('sensor_id', $central_sensor['id_sensor'])
+                                ->where('iot_granja_id', null)
+                                ->get()->first() == null
+                            ) {
+
+                                IotNucleoRegistroTratado::create(
+                                    [
+                                        'nucleo_id' => $record->id_nucleo,
+                                        'sensor_id' => $central_sensor['id_sensor'],
+                                        'time' => $record->time,
+                                        'value' => $central_sensor['value']
+                                    ]
+                                );
+                            }
+                        }
+                    }
+                }
+                $min->update(['campo' => $record->time]);
+            }
+            if ($records->count() < 10) {
+                $min->update(['campo' => $ate->getPreciseTimestamp(3)]);
+            }
+            $loop = $loop + 1;
+        }
+    }
+
+    public function jsonNucleoRecord($nucleo)
+
+    {
+        $registros = IotNucleoRegistroTratado::where('nucleo_id', $nucleo)->where('time','>',1647173320000)->limit(8000)->get();
+        $json_registros = array();
+        $nucleo = Nucleo::find($nucleo);
+        $count=0;
+        foreach ($registros->groupBy('time') as $bytimes) {
+            $json_registro = array();
+           
+            foreach ($bytimes as $registro) {
+                $data=Carbon::createFromTimestampMs($registro['time']);
+                $json_registro['Núcleo'] = $nucleo->descricao;
+                $json_registro['Data'] =  $data->toDateTimeString();
+                $json_registro[$registro->sensor->descricao] = $registro['value'];
+            }
+            $json_registros[] = $json_registro;
+            $count= $count+1;
+           
+              
+            
+        }
+      
+        $data = json_encode($json_registros,JSON_UNESCAPED_UNICODE);
+        $jsongFile = time() . '_file.json';
+        $file=File::put(public_path('/storage/'.$jsongFile),$data,['Content-Type' => 'application/json;charset=UTF-8', 'Charset' => 'utf-8'], JSON_UNESCAPED_UNICODE);
+       
+        return Response::download(public_path('/storage/'.$jsongFile));
+        
+    }
+
+    public function tratarSensoresErrados($registro, $end_device)
+
+    {
+        switch ($end_device) {
+            case 20021:
+                if ($registro['id_sensor'] == 200001) {
+                    return 200001;
+                }
+                if ($registro['id_sensor'] == 200002) {
+                    return 200002;
+                }
+                if ($registro['id_sensor'] == 200003) {
+                    return 200003;
+                }
+                break;
+            case 20022:
+                if ($registro['id_sensor'] == 200001) {
+                    return 200004;
+                }
+                if ($registro['id_sensor'] == 200002) {
+                    return 200005;
+                }
+                if ($registro['id_sensor'] == 200003) {
+                    return 200006;
+                }
+                if ($registro['id_sensor'] == 200004) {
+                    return 200007;
+                }
+                break;
+        }
+    }
+}
